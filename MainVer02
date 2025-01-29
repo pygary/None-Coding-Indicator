@@ -1,0 +1,129 @@
+import yfinance as yf
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from datetime import datetime, timedelta
+import os
+
+# Constant settings
+Z_SCORE_THRESHOLD = 2
+RSI_LOW_THRESHOLD = 20
+RSI_HIGH_THRESHOLD = 80
+LOOKBACK_PERIOD = 20
+
+def download_data(tickers, start_date, end_date):
+    """Download data within the specified date range"""
+    data = yf.download(tickers, start=start_date, end=end_date)
+    if data.empty:
+        raise ValueError("No data available for the specified date range or ticker symbols.")
+    return data
+
+def calculate_rsi2(prices, period=2):
+    """Calculate RSI2 indicator"""
+    delta = prices.diff()
+    gain = delta.where(delta > 0, 0).rolling(window=period).mean()
+    loss = -delta.where(delta < 0, 0).rolling(window=period).mean()
+    rs = gain / loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+
+def calculate_z_score(prices, lookback_period):
+    """Calculate Z-Score"""
+    rolling_mean = prices.rolling(window=lookback_period).mean()
+    rolling_std = prices.rolling(window=lookback_period).std()
+    z_scores = (prices - rolling_mean) / rolling_std
+    return z_scores
+
+def generate_signals(prices, rsi2, z_scores):
+    """Generate buy and sell signals"""
+    signals = pd.DataFrame(index=prices.index)
+    signals['Close'] = prices
+    signals['RSI2'] = rsi2
+    signals['Z-Score'] = z_scores
+    signals['StdDev'] = prices.rolling(window=LOOKBACK_PERIOD).std()
+    signals['Signal'] = 0  # 0 means no signal, 1 means buy, -1 means sell
+    signals.loc[(signals['RSI2'] < RSI_LOW_THRESHOLD) & (signals['Z-Score'] < -1.5), 'Signal'] = 1
+    signals.loc[(signals['RSI2'] > RSI_HIGH_THRESHOLD) & (signals['Z-Score'] > 1.5), 'Signal'] = -1
+    return signals
+
+def plot_signals_chart(signals, ticker_symbol):
+    """Draw and save additional signal charts"""
+    fig, axs = plt.subplots(3, 1, figsize=(18, 18))
+    last_date = signals.index[-1].strftime('%Y-%m-%d')
+
+    # Closing price chart
+    axs[0].plot(signals.index, signals['Close'], label='Close Price', color='blue', linewidth=1.5)
+    axs[0].set_title(f'{ticker_symbol} Close Prices ({last_date})', fontsize=16)
+    axs[0].set_ylabel('Price', fontsize=14)
+    axs[0].grid(True, linestyle='--', linewidth=0.5)
+
+    # Draw buy and sell signals
+    buy_signals = signals[signals['Signal'] == 1]
+    sell_signals = signals[signals['Signal'] == -1]
+    axs[0].scatter(buy_signals.index, buy_signals['Close'], marker='^', color='green', label='Buy Signal', s=100, alpha=0.7)
+    axs[0].scatter(sell_signals.index, sell_signals['Close'], marker='v', color='red', label='Sell Signal', s=100, alpha=0.7)
+    axs[0].legend(loc='upper left')
+    axs[0].set_xticks(signals.index[::5])
+    axs[0].tick_params(axis='x', rotation=45)
+
+    # RSI2 and standard deviation combined chart
+    ax2 = axs[1]
+    ax2.plot(signals.index, signals['RSI2'], label='RSI2', color='orange', linewidth=1.5)
+    ax2.axhline(RSI_LOW_THRESHOLD, color='red', linestyle='-', linewidth=1, label=f'RSI2 Lower Threshold ({RSI_LOW_THRESHOLD})')
+    ax2.axhline(RSI_HIGH_THRESHOLD, color='green', linestyle='-', linewidth=1, label=f'RSI2 Upper Threshold ({RSI_HIGH_THRESHOLD})')
+    ax2.set_ylabel('RSI2 Value', fontsize=14)
+    ax2.legend(loc='upper left')
+    ax2.grid(True, linestyle='-', linewidth=1)
+    ax2_std = ax2.twinx()
+    ax2_std.plot(signals.index, signals['StdDev'], label='StdDev', color='darkred', linewidth=1.5, linestyle='--')
+    ax2_std.set_ylabel('StdDev', fontsize=14)
+    ax2_std.legend(loc='upper left')
+    ax2.set_xticks(signals.index[::5])
+    ax2.tick_params(axis='x', rotation=45)
+
+    # Z-Score Chart
+    axs[2].plot(signals.index, signals['Z-Score'], label='Z-Score', color='purple', linewidth=2)
+    axs[2].axhline(-Z_SCORE_THRESHOLD, color='red', linestyle='--', linewidth=2, label=f'Lower Z-Score Threshold (-{Z_SCORE_THRESHOLD})')
+    axs[2].axhline(Z_SCORE_THRESHOLD, color='green', linestyle='--', linewidth=2, label=f'Upper Z-Score Threshold ({Z_SCORE_THRESHOLD})')
+    axs[2].set_title(f'Z-Score Indicator ({last_date})', fontsize=16)
+    axs[2].set_ylabel('Z-Score', fontsize=14)
+    axs[2].legend(loc='upper left')
+    axs[2].grid(True, linestyle='--', linewidth=0.5)
+    axs[2].set_xticks(signals.index[::5])
+    axs[2].tick_params(axis='x', rotation=45)
+
+    # General title
+    plt.suptitle(f'{ticker_symbol} Price, RSI2, Z-Score, and StdDev with Signals ({last_date})', fontsize=20, fontweight='bold')
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+
+    # Save chart
+    output_dir = "c:\\temp"
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    output_path = os.path.join(output_dir, f'{ticker_symbol}_signals.png')
+    plt.savefig(output_path, format='png', dpi=300)
+    print(f"Chart saved to: {output_path}")
+    plt.show()
+
+# Main program
+try:
+    tickers = ["^SPX"]
+    start_date = (datetime.today() - timedelta(days=180)).strftime('%Y-%m-%d')
+    end_date = datetime.today().strftime('%Y-%m-%d')
+    data = download_data(tickers, start_date, end_date)
+
+    close_prices = data['Close']
+
+    for ticker in tickers:
+        if ticker not in close_prices.columns:
+            print(f"No data available for {ticker}")
+            continue
+
+        ticker_close_prices = close_prices[ticker].dropna()
+        rsi2 = calculate_rsi2(ticker_close_prices)
+        z_scores = calculate_z_score(ticker_close_prices, LOOKBACK_PERIOD)
+        signals = generate_signals(ticker_close_prices, rsi2, z_scores)
+        plot_signals_chart(signals, ticker)
+
+except Exception as e:
+    print(f"An error occurred: {e}")

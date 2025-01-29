@@ -1,0 +1,90 @@
+import os
+import pandas as pd
+from glob import glob
+import configparser
+import logging
+
+# 設定日誌
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# 讀取 INI 文件
+config = configparser.ConfigParser()
+config.read(r'C:\temp\setting\C_LCP_28012025.ini')
+
+# 讀取 base_dirs 和 output_path
+base_dirs = config['Paths']['base_dirs'].split(', ')
+output_path = config['Paths']['output_path']
+
+# Prepare a list to hold all matching records
+results = []
+
+# Columns to drop
+columns_to_drop = [
+    '合約月份_認沽', '引申波幅%_認購', '引申波幅%_認沽',
+    '期權資金流_認購', '即日期權資金流_認購', '即日期權資金流_認沽',
+    '期權資金流_認沽', '認購/認沽_認購', '認購/認沽_認沽',
+    '未平倉合約_認購', '未平倉合約_認沽'
+]
+
+# Iterate over each base directory
+for base_dir in base_dirs:
+    if not os.path.exists(base_dir):
+        logging.warning(f"Directory {base_dir} does not exist.")
+        continue
+
+    # Find all folders in the base directory
+    folders = [folder for folder in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, folder))]
+
+    # Iterate over each folder
+    for folder in folders:
+        folder_path = os.path.join(base_dir, folder)
+
+        # Extract the date from the folder name (first 6 characters)
+        folder_date = folder[:6]
+
+        # Iterate over all Excel files in the folder
+        for file in glob(os.path.join(folder_path, '*.xlsx')):
+            try:
+                # Read the Excel file into a DataFrame
+                df = pd.read_excel(file)
+                
+                # Ensure required columns exist
+                required_columns = ['成交量3', '行使價', '認購/認沽']
+                if all(column in df.columns for column in required_columns):
+                    # Filter rows where 成交量3 > 10
+                    df = df[df['成交量3'] > 10]
+
+                    # Separate 認購 and 認沽
+                    call_df = df[df['認購/認沽'] == '認購']
+                    put_df = df[df['認購/認沽'] == '認沽']
+
+                    # Merge 認購 and 認沽 on 行使價
+                    merged = pd.merge(call_df, put_df, on='行使價', suffixes=('_認購', '_認沽'))
+
+                    # Filter rows where 成交量3_認購 == 成交量3_認沽
+                    merged = merged[merged['成交量3_認購'] == merged['成交量3_認沽']]
+
+                    # Add 成本 column: 結算價_認購 + 結算價_認沽
+                    if '結算價_認購' in merged.columns and '結算價_認沽' in merged.columns:
+                        merged['成本'] = merged['結算價_認購'] + merged['結算價_認沽']
+
+                    # Drop unnecessary columns
+                    merged.drop(columns=[col for col in columns_to_drop if col in merged.columns], errors='ignore', inplace=True)
+
+                    # Add the 日期欄位 with the extracted folder date
+                    if not merged.empty:
+                        merged.insert(0, '日期', folder_date)
+                        results.append(merged)
+            except Exception as e:
+                logging.error(f"Error processing file {file}: {e}")
+
+# Combine all matching records into a single DataFrame
+if results:
+    final_df = pd.concat(results, ignore_index=True)
+    logging.info(f"Found {len(final_df)} matching records.")
+    
+    # Save the final DataFrame to an Excel file
+    final_df.to_excel(output_path, index=False)
+    logging.info(f"Results saved to {output_path}")
+else:
+    logging.info("No matching records found.")
